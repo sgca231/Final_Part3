@@ -1,0 +1,102 @@
+//Open gcloud shell
+
+**Create multiple web server instances
+*first, copy and paste changing the zone to your own 
+gcloud compute instances create www1 --zone=us-central1-a --tags=network-lb-tag --machine-type=e2-small --image-family=debian-11 --image-project=debian-cloud --metadata=startup-script='#!/bin/bash
+apt-get update
+apt-get install apache2 -y
+service apache2 restart 
+echo "<h3>Web Server: www1</h3>" | tee /var/www/html/index.html
+
+*second, copy and paste changing the zone to your own 
+gcloud compute instances create www2 --zone=us-central1-a --tags=network-lb-tag --machine-type=e2-small --image-family=debian-11 --image-project=debian-cloud --metadata=startup-script='#!/bin/bash
+apt-get update
+apt-get install apache2 -y
+service apache2 restart 
+echo "<h3>Web Server: www1</h3>" | tee /var/www/html/index.html
+
+*third, copy and paste changing the zone to your own
+gcloud compute instances create www1 --zone=us-central1-a --tags=network-lb-tag --machine-type=e2-small --image-family=debian-11 --image-project=debian-cloud --metadata=startup-script='#!/bin/bash
+apt-get update
+apt-get install apache2 -y
+service apache2 restart 
+echo "<h3>Web Server: www1</h3>" | tee /var/www/html/index.html
+
+*Create firewall
+gcloud compute firewall-rules create www-firewall-network-lb --target-tags network-lb-tag --allow tcp:80
+
+*List your instances and verify they are all running
+gcloud compute instances list
+//replace the IP ADDRESS with each one from your instance
+curl htt://[IP_ADDRESS]
+
+**Confifure the load balancing server
+*created a static external IP address
+//change region to your own
+gcloud compute addresses create network-lb-ip-1 --region us-central1
+
+*add a legacy http help check resource
+gcloud compute http-health-checks create basic-check
+
+*add a target pool in the same region as your instances
+//change region to your own
+gcloud compute target-pools create www-pool --region us-central1 --http-health-check basic-check
+
+*add the instances to the pool 
+gcloud compute target-pools add-instances www-pool --instances www1,www2,www3
+
+*add a forwarding rule
+//change region to your own
+gcloud compute forwarding-rules create www-rule --region  us-central1 --ports 80 --address network-lb-ip-1 --target-pool www-pool
+
+**Send traffic to your instance
+*enter the following command to see the external IP address of the www-rule forwarding rule
+//change region to your own
+gcloud compute forwarding-rules describe www-rule --region us-central1 
+//mine was 34.67.229.91 
+
+**Create an HTTP load balancer
+*create template
+//change region to your own
+gcloud compute instance-templates create lb-backend-template --region=us-central1 --network=default --subnet=default --tags=allow-health-check --machine-type=e2-medium --image-family=debian-11 --image-project=debian-cloud --metadata=startup-script='#!/bin/bash
+apt-get update
+     apt-get install apache2 -y
+     a2ensite default-ssl
+     a2enmod ssl
+     vm_hostname="$(curl -H "Metadata-Flavor:Google" \
+     http://169.254.169.254/computeMetadata/v1/instance/name)"
+     echo "Page served from: $vm_hostname" | \
+     tee /var/www/html/index.html
+     systemctl restart apache2'
+
+*create a managed instance group
+//change zone to your own
+gcloud compute instance-groups managed create lb-backend-group --template=lb-backend-template --size=2 --zone=us-central1-a
+
+*create a firewall rule
+gcloud compute firewall-rules create fw-allow-health-check --network=default --action=allow --direction=ingress --source-ranges=130.211.0.0/22,35.191.0.0/16 --target-tags=allow-health-check --rules=tcp:80
+
+*set up a global static external IP address
+gcloud compute addresses create lb-ipv4-1 --ip-version=IPV4 –global
+*get address
+gcloud compute addresses describe lb-ipv4-1 --format="get(address)" --global
+//mine 34.49.80.114
+
+*create health check for load balancer
+gcloud compute health-checks create http http-basic-check --port 80
+
+*create a backend service
+gcloud compute backend-services create web-backend-service --protocol=HTTP --port-name=http --health-checks=http-basic-check –global
+
+*add your instance group to the backend service
+//change zone to your own
+gcloud compute backend-services add-backend web-backend-service --instance-group=lb-backend-group --instance-group-zone=us-central1-a –global
+
+*create a URL map to route incoming requests
+gcloud compute url-maps create web-map-http --default-service web-backend-service
+
+*create a target HTTP proxy to route requests to your map
+gcloud compute target-http-proxies create http-lb-proxy --url-map web-map-http
+
+*create a target HTTP proxy to route request to your URL map
+gcloud compute forwarding-rules create http-content-rule --address=lb-ipv4-1 --global --target-http-proxy=http-lb-proxy --ports=80
